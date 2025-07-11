@@ -1,0 +1,30 @@
+from transformers import AutoTokenizer, pipeline
+import torch
+
+# Load Qwen instruction-tuned small model
+model_name = "AlibabaCloud/qwen2.5-0.5B-instruct"
+device = 0 if torch.cuda.is_available() else -1
+
+pipe = pipeline(
+    "text2text-generation",
+    model=model_name,
+    tokenizer=model_name,
+    device=device,
+    torch_dtype=torch.float16 if device == 0 else torch.float32
+)
+
+# Build prompt using your emotion_label and test_text
+prompt = (
+    f"The user feels {emotion_label}. "
+    f"They said: \"{test_text}\". "
+    "Provide 3 to 4 specific, practical tips to improve their mental health. "
+    "Output each tip on its own line."
+)
+
+# Generate advice
+result = pipe(prompt, max_new_tokens=100, do_sample=True, temperature=0.7)
+response_text = result[0]["generated_text"].strip()
+
+# Display results
+print("\n🧠 Mental Health Tips:")
+print(response_text)
