@@ -1,0 +1,90 @@
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM
+import torch
+
+# DialoGPT for Fast Tips
+class FastMentalHealthLLM:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = "microsoft/DialoGPT-small"
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, cache_dir="./model_cache")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            cache_dir="./model_cache",
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            low_cpu_mem_usage=True
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model.to(self.device)
+        self.model.eval()
+    
+    def get_advice(self, emotion_num, user_text):
+        emotions = ["sad", "happy", "loving", "angry", "fearful", "surprised"]
+        emotion = emotions[emotion_num]
+        prompt = f"Person feels {emotion}. Give 3 quick mental health tips:"
+
+        inputs = self.tokenizer.encode(prompt, return_tensors="pt", max_length=50, truncation=True).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_new_tokens=80,
+                temperature=0.8,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+                num_return_sequences=1,
+                early_stopping=True
+            )
+
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return response[len(prompt):].strip()
+
+# FLAN-T5 for Thoughtful Tips
+class LightMentalHealthLLM:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = "google/flan-t5-small"
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, cache_dir="./model_cache")
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.model_name,
+            cache_dir="./model_cache",
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+        )
+        self.model.to(self.device)
+        self.model.eval()
+
+    def get_advice(self, emotion_label, user_text):
+        prompt = f"A person is feeling {emotion_label}. Suggest 3 to 4 helpful mental health strategies."
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=64).to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=100,
+                temperature=0.7,
+                do_sample=True,
+                num_beams=3
+            )
+        
+        decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return decoded.strip()
+
+
+
+# Instantiate LLMs only once
+fast_llm = FastMentalHealthLLM()
+light_llm = LightMentalHealthLLM()
+
+# Print Emotion Results
+print(f"\n🎯 Emotion: {predicted_emotion}")
+print(f"📊 Sentiment Score: {sentiment_score:.2f}")
+
+# DialoGPT Fast Tips
+print("\n🚀 Quick Mental Health Tips (DialoGPT):")
+fast_advice = fast_llm.get_advice(prediction[0], user_input)
+print("💡", fast_advice)
+
+# FLAN-T5 Light Tips
+print("\n🧠 Thoughtful Advice to Improve Your Mental Health (FLAN-T5):")
+light_advice = light_llm.get_advice(predicted_emotion, user_input)
+print("🌱", light_advice)
