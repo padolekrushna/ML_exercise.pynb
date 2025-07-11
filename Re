@@ -1,0 +1,32 @@
+# ------------------------------ LLM ADVICE SECTION ------------------------------
+
+# Make sure FastMentalHealthLLM and LightMentalHealthLLM are already defined above
+# If not, copy those classes from earlier responses
+
+# Utility function to load the fast model (DialoGPT)
+@st.cache_resource
+def load_fast_llm():
+    return FastMentalHealthLLM()
+
+# Utility function to load the light model (Flan-T5)
+@st.cache_resource
+def load_light_llm():
+    return LightMentalHealthLLM()
+
+# Function to show DialoGPT-based quick tips
+def show_fast_advice(emotion_num, emotion_label, user_text):
+    st.subheader("🚀 Quick Mental Health Tips (DialoGPT)")
+    fast_llm = load_fast_llm()
+    with st.spinner("Generating fast tips..."):
+        advice = fast_llm.get_advice(emotion_num, user_text)
+    st.info(f"💡 {advice}")
+    st.markdown("📞 **Need help?** Reach out to a mental health professional.")
+
+# Function to show Flan-T5-based thoughtful advice
+def show_light_advice(emotion_label, user_text):
+    st.subheader("🧠 Thoughtful Tips to Improve Your Mental Health (FLAN-T5)")
+    light_llm = load_light_llm()
+    with st.spinner("Generating thoughtful tips..."):
+        tips = light_llm.get_advice(emotion_label, user_text)
+    st.success(f"🌱 {tips}")
+    st.markdown("🧘 **Tip:** Take small breaks and be kind to yourself.")
