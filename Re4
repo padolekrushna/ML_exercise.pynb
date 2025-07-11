@@ -1,0 +1,48 @@
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
+
+class MentalHealthTipsLLM:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = "google/flan-t5-base"  # Use FLAN-T5 Base for better results
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def generate_tips(self, emotion_label, test_text):
+        """Generate 3–4 bullet-pointed, practical mental health tips"""
+        prompt = (
+            f"The user is feeling {emotion_label}. "
+            f"User message: \"{test_text}\". "
+            "Based on the emotion and message, provide 3 to 4 short, specific mental health tips in bullet points. "
+            "Focus on practical self-care or coping strategies."
+        )
+
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True).to(self.device)
+
+        with torch.no_grad():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=128,
+                temperature=0.7,
+                do_sample=True,
+                num_return_sequences=1
+            )
+
+        response = self.tokenizer.decode(output[0], skip_special_tokens=True)
+        return response.strip()
+
+
+
+# Initialize model once
+mental_llm = MentalHealthTipsLLM()
+
+# Show predicted emotion and sentiment
+print(f"\n🎯 Predicted Emotion: {emotion_label}")
+print(f"📊 Sentiment Score: {sentiment_score:.2f}")
+
+# Generate mental health tips
+print("\n🧠 Mental Health Guidance (via LLM):")
+tips = mental_llm.generate_tips(emotion_label, test_text)
+print(tips)
