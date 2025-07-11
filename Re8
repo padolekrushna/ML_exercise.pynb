@@ -1,40 +1,60 @@
-# Mental Health Assistant (Jupyter Notebook)
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+# Import necessary libraries
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 import torch
 
-# 1. Initialize Model
-tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
-model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+# Step 1: Initialize Emotion Detection Model
+emotion_classifier = pipeline("text-classification", 
+                            model="bhadresh-savani/distilbert-base-uncased-emotion",
+                            return_all_scores=False)
 
-# 2. Input Variables
-emotion = "anxious"  # Try: sad/angry/joyful
-user_text = "I can't stop worrying about my job interview tomorrow"
-
-# 3. Generate Tips
-def generate_tips(emotion, user_text):
-    prompt = f"""
-    Generate 3 practical mental health tips for someone feeling {emotion}. 
-    User context: "{user_text}". 
-    Respond concisely in bullet points:
-    1. 
-    2. 
-    3. 
-    """
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-    outputs = model.generate(**inputs, max_new_tokens=150)
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-# 4. Output
-print("Mental Health Tips:")
-print(generate_tips(emotion, user_text))
-
-
-
-# Mental-Health-Mistral (4-bit quantized for 8GB GPU)
-from transformers import BitsAndBytesConfig
-
-bnb_config = BitsAndBytesConfig(load_in_4bit=True)
+# Step 2: Initialize LLM for Response Generation
+model_name = "microsoft/Phi-3-mini-4k-instruct"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
-    "GRMenon/mental-health-mistral-7b-instructv0.2-finetuned-V2", 
-    quantization_config=bnb_config
+    model_name,
+    device_map="auto",
+    load_in_4bit=True,
+    trust_remote_code=True
 )
+
+# Step 3: Define Function to Detect Emotion and Generate Response
+def mental_health_assistant(user_input):
+    # Detect emotion
+    emotion_result = emotion_classifier(user_input)
+    emotion = emotion_result[0]['label']
+    confidence = emotion_result[0]['score']
+
+    # Create prompt for 3–4 practical mental health tips
+    prompt = f"""<|user|> The user says: "{user_input}" The detected emotion is {emotion}. Provide a short, empathetic response followed by a list of 3–4 practical tips to improve mental health, tailored to the detected emotion. Keep the response concise, under 100 words total, and format the tips as a numbered list. <|assistant|>"""
+
+    # Tokenize and generate response
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=100,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9,
+        pad_token_id=tokenizer.eos_token_id
+    )
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    # Extract assistant's response
+    assistant_response = response.split("<|assistant|>")[1].strip()
+
+    return emotion, confidence, assistant_response
+
+# Step 4: Test the Assistant with Example Inputs
+test_inputs = [
+    "I feel really sad today, like nothing is going right.",
+    "I'm so angry about work, my boss was unfair!",
+    "I'm super excited about my new project!",
+    "I'm feeling really anxious about a presentation tomorrow."
+]
+
+# Step 5: Run the Assistant and Display Results
+for user_input in test_inputs:
+    emotion, confidence, response = mental_health_assistant(user_input)
+    print(f"\nUser Input: {user_input}")
+    print(f"Detected Emotion: {emotion} (Confidence: {confidence:.2f})")
+    print(f"Assistant Response:\n{response}")
