@@ -1,0 +1,37 @@
+# Install transformers if not already done
+!pip install transformers --quiet
+
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
+
+# Initialize model and tokenizer once
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model_name = "google/flan-t5-base"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+
+# Prepare input for the model
+prompt = (
+    f"The user is feeling {emotion_label}. "
+    f"User message: \"{test_text}\". "
+    "Based on this, suggest 3 to 4 short, practical mental health tips to help improve emotional well-being. "
+    "Keep them specific and helpful in bullet points."
+)
+
+inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(device)
+
+# Generate response
+with torch.no_grad():
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=128,
+        temperature=0.7,
+        do_sample=True,
+        top_p=0.9,
+        num_return_sequences=1
+    )
+
+response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+print("\n🧠 Mental Health Guidance:")
+print(response)
