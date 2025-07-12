@@ -1,34 +1,39 @@
-# Mental Health Support LLM
-# A lightweight model for generating mental health advice based on emotions
+# Real LLM-based Mental Health Support System
+# Dynamic response generation using fine-tuned language model
 
+import torch
+import torch.nn as nn
+from transformers import (
+    GPT2LMHeadModel, GPT2Tokenizer, GPT2Config,
+    TrainingArguments, Trainer, DataCollatorForLanguageModeling
+)
+from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
-from transformers import (
-    AutoTokenizer, AutoModelForCausalLM, 
-    TrainingArguments, Trainer, pipeline
-)
-import torch
-from torch.utils.data import Dataset
-import json
 from sklearn.model_selection import train_test_split
+import json
+import re
 import warnings
 warnings.filterwarnings('ignore')
 
-# Check if GPU is available
+# Check device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 class MentalHealthDataset(Dataset):
+    """Custom dataset for mental health conversations"""
     def __init__(self, texts, tokenizer, max_length=512):
         self.texts = texts
         self.tokenizer = tokenizer
         self.max_length = max_length
-    
+
     def __len__(self):
         return len(self.texts)
-    
+
     def __getitem__(self, idx):
-        text = self.texts[idx]
+        text = str(self.texts[idx])
+        
+        # Tokenize the text
         encoding = self.tokenizer(
             text,
             truncation=True,
@@ -36,362 +41,329 @@ class MentalHealthDataset(Dataset):
             max_length=self.max_length,
             return_tensors='pt'
         )
+        
         return {
             'input_ids': encoding['input_ids'].flatten(),
             'attention_mask': encoding['attention_mask'].flatten(),
             'labels': encoding['input_ids'].flatten()
         }
 
-# Create comprehensive training data
-def create_training_data():
-    """Create training data with emotion-based mental health advice"""
+def create_comprehensive_training_data():
+    """Create extensive training data for mental health LLM"""
     
-    training_data = []
+    training_conversations = []
     
-    # Sad emotion responses
-    sad_responses = [
-        {
-            "input": "Emotion: sad, User text: I'm feeling really down today and nothing seems to be going right.",
-            "output": "Here are 4 ways to improve your mental health when feeling sad:\n1. Practice deep breathing exercises for 5-10 minutes to calm your nervous system and reduce stress hormones.\n2. Take a 15-20 minute walk outside, as natural light and physical movement can boost serotonin levels.\n3. Write down three things you're grateful for, even small ones, to shift focus from negative to positive thoughts.\n4. Reach out to a trusted friend or family member for support, as social connection is crucial for emotional wellbeing."
-        },
-        {
-            "input": "Emotion: sad, User text: I've been feeling sad for the past few days and can't shake it off.",
-            "output": "Here are 4 strategies to help lift your mood when experiencing sadness:\n1. Engage in a creative activity like drawing, writing, or music to express emotions in a healthy way.\n2. Practice mindfulness meditation for 10 minutes to observe your thoughts without judgment.\n3. Ensure you're getting 7-9 hours of quality sleep, as sleep deprivation worsens emotional regulation.\n4. Consider talking to a mental health professional if sadness persists, as they can provide personalized coping strategies."
-        },
-        {
-            "input": "Emotion: sad, User text: Everything feels overwhelming and I just want to stay in bed.",
-            "output": "Here are 4 gentle steps to help when feeling overwhelmed and sad:\n1. Start with one small task like making your bed or drinking a glass of water to create momentum.\n2. Practice the 5-4-3-2-1 grounding technique: notice 5 things you see, 4 you can touch, 3 you hear, 2 you smell, 1 you taste.\n3. Limit social media and news consumption, as negative information can amplify feelings of sadness.\n4. Try progressive muscle relaxation by tensing and releasing each muscle group to reduce physical tension."
-        }
+    # Format: [EMOTION] [USER_TEXT] -> [RESPONSE]
+    conversations = [
+        # Sadness variations
+        "[SAD] I feel empty inside and nothing brings me joy anymore -> Here are 4 ways to address deep sadness and rebuild joy: 1. Start with micro-activities - even 5 minutes of something pleasant can begin neural pathway rebuilding. 2. Practice behavioral activation by scheduling one small meaningful activity daily, gradually increasing as energy returns. 3. Consider light therapy or spending time near bright windows, as light exposure directly impacts mood-regulating neurotransmitters. 4. Engage in expressive writing for 10 minutes daily to process emotions and identify patterns that contribute to emptiness.",
+        
+        "[SAD] I lost someone important and can't stop crying -> Here are 4 approaches to navigate grief while protecting your mental health: 1. Allow yourself to feel the pain without judgment - grief is love with nowhere to go, and suppressing it can prolong the process. 2. Create a memorial ritual or space to honor your loss, giving grief a structured outlet rather than overwhelming randomness. 3. Practice grounding techniques when overwhelmed: name 5 things you see, 4 you hear, 3 you feel, 2 you smell, 1 you taste. 4. Consider joining a grief support group or therapy, as shared experiences normalize the intense emotions you're experiencing.",
+        
+        "[SAD] Everything feels pointless and I have no motivation -> Here are 4 strategies to rebuild motivation when depression creates apathy: 1. Use the 2-minute rule: commit to any activity for just 2 minutes, as starting often creates momentum for continuing. 2. Focus on process goals rather than outcome goals - celebrate the act of trying rather than demanding specific results. 3. Connect with your 'why' by identifying one person or cause that matters to you, even slightly, and do something small for them. 4. Practice opposite action: when you feel like isolating, reach out; when you feel like staying in bed, sit up; small contrary actions can shift neural patterns.",
+        
+        # Anxiety variations
+        "[ANXIETY] My heart races and I can't breathe when I think about work -> Here are 4 techniques to manage work-related anxiety and physical symptoms: 1. Practice the 4-7-8 breathing technique: inhale for 4 counts, hold for 7, exhale for 8 - this activates your parasympathetic nervous system within minutes. 2. Use the 5-4-3-2-1 grounding method when panic starts: identify 5 things you see, 4 you touch, 3 you hear, 2 you smell, 1 you taste. 3. Challenge catastrophic thinking by asking 'What's the worst that could realistically happen?' and 'How have I handled similar situations before?'. 4. Create a pre-work routine that includes 10 minutes of calming activity to transition your nervous system into a more regulated state.",
+        
+        "[ANXIETY] I constantly worry about things that might never happen -> Here are 4 methods to break the cycle of anticipatory anxiety: 1. Practice the 'worry window' technique: schedule 15 minutes daily for worrying, then redirect anxious thoughts outside this time with 'I'll think about this during worry time.' 2. Use probability estimation: rate the likelihood of your feared outcome on a scale of 1-10, then identify evidence for and against it happening. 3. Develop a 'worry tree': for each worry, ask 'Can I do something about this?' If yes, make a plan; if no, practice acceptance techniques. 4. Try progressive muscle relaxation daily to reduce baseline physical tension that feeds anxiety loops.",
+        
+        "[ANXIETY] Social situations make me panic and I avoid them -> Here are 4 approaches to gradually overcome social anxiety: 1. Start with micro-exposures: make brief eye contact with a cashier or say 'thank you' to a stranger, building confidence incrementally. 2. Practice self-compassion by treating yourself as kindly as you would a good friend facing the same fears. 3. Prepare conversation starters and remember that most people are focused on themselves, not judging you as harshly as you imagine. 4. Use the 'spotlight effect' reminder: you're not the center of attention as much as anxiety makes you feel, and people forget social 'mistakes' quickly.",
+        
+        # Anger variations
+        "[ANGER] I explode at small things and regret it immediately -> Here are 4 strategies to manage explosive anger and prevent regret: 1. Learn your anger warning signs: tension in jaw, clenched fists, racing thoughts - and use them as cues to take a timeout before reacting. 2. Practice the STOP technique: Stop what you're doing, Take a breath, Observe your emotions, Proceed with intention rather than reaction. 3. Use intense physical exercise as an outlet: do jumping jacks, punch a pillow, or go for a fast walk to discharge angry energy safely. 4. Develop a repair strategy: learn to apologize effectively and discuss triggers with people you've hurt to prevent future explosions.",
+        
+        "[ANGER] Someone betrayed my trust and I'm furious -> Here are 4 ways to process betrayal anger while protecting your mental health: 1. Validate your anger first - betrayal is legitimately painful and anger is a natural response to injustice and hurt. 2. Write an unexpressed letter to the person who hurt you, expressing all your feelings without censoring, then decide if any version should be sent. 3. Focus on what you can control: your response, your boundaries, and your future choices about who receives your trust. 4. Consider whether this relationship is worth repairing or if your energy is better invested in relationships that honor your worth.",
+        
+        "[ANGER] I feel rage about unfair treatment at work -> Here are 4 approaches to channel workplace anger constructively: 1. Document incidents objectively with dates and details, as this transforms emotional reactions into factual advocacy for yourself. 2. Practice assertive communication using 'I' statements: 'I felt dismissed when...' rather than 'You always...' to address issues without escalating conflict. 3. Channel anger into action: research your rights, speak with HR if appropriate, or update your resume while processing the emotion. 4. Create boundaries to protect your mental health: limit emotional investment in unfair people and situations while maintaining professional performance.",
+        
+        # Stress variations
+        "[STRESS] I'm overwhelmed with deadlines and can't focus -> Here are 4 techniques to manage overwhelming stress and restore focus: 1. Practice the 'brain dump' method: write down everything on your mind, then categorize by urgency and importance to create clarity from chaos. 2. Use the Pomodoro Technique: 25 minutes focused work, 5 minutes break, to prevent overwhelm and maintain sustainable productivity. 3. Implement single-tasking: resist multitasking urges as they increase stress hormones and decrease efficiency. 4. Schedule micro-breaks every hour: 2-3 minutes of deep breathing or gentle stretching to reset your nervous system throughout the day.",
+        
+        "[STRESS] My stress is affecting my sleep and appetite -> Here are 4 strategies to address stress that's disrupting your physical health: 1. Create a wind-down routine 1 hour before bed: dim lights, avoid screens, practice gentle yoga or read to signal your body it's time to rest. 2. Practice mindful eating by checking hunger cues and choosing foods that support stress recovery: complex carbs, omega-3 rich foods, and adequate hydration. 3. Use progressive muscle relaxation before bed: tense and release each muscle group to discharge physical stress tension. 4. Consider if your stress level requires professional support, as chronic stress impacting basic functions benefits from therapeutic intervention.",
+        
+        "[STRESS] I take on too much and can't say no -> Here are 4 approaches to managing over-commitment stress: 1. Practice the 24-hour rule: when asked to take on something new, say 'Let me check my schedule and get back to you' to avoid immediate yes responses. 2. Identify your core values and priorities to guide decision-making: does this request align with what matters most to you? 3. Develop no-guilt scripts: 'I'm not available for that' or 'My plate is full right now' - you don't owe detailed explanations for protecting your time. 4. Recognize that saying no to some things means saying yes to your mental health and the commitments that truly matter.",
+        
+        # Loneliness variations
+        "[LONELINESS] I feel disconnected from everyone around me -> Here are 4 ways to rebuild connection when feeling isolated: 1. Start with small social interactions: smile at neighbors, chat with store clerks, or comment positively on social media to rebuild social momentum. 2. Practice self-compassion by treating yourself as kindly as you would a lonely friend - loneliness doesn't mean you're flawed or unworthy of connection. 3. Engage in parallel activities: work in a coffee shop, join a gym, or attend library events where you're around people without pressure to interact deeply. 4. Consider volunteering for causes you care about, as shared purpose creates natural opportunities for meaningful connection.",
+        
+        "[LONELINESS] I have no close friends and feel invisible -> Here are 4 strategies to build meaningful friendships from scratch: 1. Join activities or classes that genuinely interest you, as shared interests create natural conversation starters and connection points. 2. Practice being vulnerable in small doses: share authentic thoughts and feelings rather than surface-level pleasantries to deepen relationships. 3. Be the friend you want to have: initiate plans, remember details about others' lives, and show genuine interest in their experiences. 4. Be patient with the process - meaningful friendships develop over time through consistent, mutual investment in each other's wellbeing.",
+        
+        "[LONELINESS] I'm surrounded by people but still feel alone -> Here are 4 approaches to address emotional loneliness despite social contact: 1. Assess the quality of your relationships: are you known for who you really are, or are you performing a version of yourself? 2. Practice authentic self-expression by sharing your genuine thoughts, feelings, and experiences instead of what you think others want to hear. 3. Seek deeper conversations by asking meaningful questions: 'What's been on your mind lately?' or 'What's challenging you right now?' 4. Consider whether you're emotionally available to others - sometimes loneliness persists when we're not open to the connection that's available.",
+        
+        # Joy/Happiness variations
+        "[JOY] I'm happy but worried it won't last -> Here are 4 ways to maintain and extend positive emotions: 1. Practice gratitude by specifically identifying what contributed to your happiness and acknowledging the people who supported you. 2. Use this positive energy to strengthen relationships: share your joy with others and express appreciation for their role in your success. 3. Create positive memories by fully experiencing the present moment: notice how happiness feels in your body and mind. 4. Plan how to sustain positive practices: what activities, people, or habits contributed to this feeling that you can maintain going forward?",
+        
+        "[JOY] I accomplished something big and feel amazing -> Here are 4 strategies to honor your success and maintain motivation: 1. Celebrate appropriately by acknowledging the effort, persistence, and growth that led to this achievement. 2. Share your success with supportive people who will genuinely celebrate with you and reflect back your accomplishment. 3. Use this momentum to set your next meaningful goal, but ensure it aligns with your values rather than external expectations. 4. Practice self-compassion by appreciating your journey, including the challenges you overcame to reach this point.",
+        
+        "[JOY] I want to help others feel as good as I do -> Here are 4 ways to spread positivity while maintaining your own wellbeing: 1. Practice acts of kindness that align with your strengths and interests, as authentic helping feels fulfilling rather than draining. 2. Share your positive energy through genuine compliments, active listening, and being fully present with others. 3. Mentor or support others facing challenges you've overcome, as your experience can provide hope and practical guidance. 4. Take care of your own needs first - you can't pour from an empty cup, so maintain the practices that support your own mental health.",
+        
+        # Mixed emotions
+        "[MIXED] I feel anxious and sad at the same time -> Here are 4 approaches to navigate complex emotional states: 1. Acknowledge both emotions without trying to choose one - mixed feelings are normal and don't need to be resolved immediately. 2. Address the physical symptoms first: use breathing techniques for anxiety, gentle movement for sadness, to create space for emotional processing. 3. Journal about both emotions separately: what is the anxiety about? what is the sadness about? They may have different sources requiring different approaches. 4. Practice self-compassion for experiencing complexity - humans naturally feel multiple emotions simultaneously, and this doesn't mean anything is wrong with you.",
+        
+        "[MIXED] I'm angry but also hurt and disappointed -> Here are 4 ways to process layered emotions effectively: 1. Recognize that anger often protects deeper feelings like hurt - both emotions are valid and provide important information about your needs and boundaries. 2. Express each emotion safely: physical activity for anger, crying or creative expression for hurt, honest conversation for disappointment. 3. Identify what each emotion is telling you: anger about boundaries violated, hurt about care not received, disappointment about expectations unmet. 4. Decide what action each emotion calls for: anger might require setting boundaries, hurt might need healing time, disappointment might need adjusted expectations.",
     ]
     
-    # Anxiety responses
-    anxiety_responses = [
-        {
-            "input": "Emotion: anxiety, User text: I'm feeling anxious about work and can't stop worrying.",
-            "output": "Here are 4 techniques to manage anxiety and reduce worry:\n1. Practice the 4-7-8 breathing technique: inhale for 4, hold for 7, exhale for 8 to activate your parasympathetic nervous system.\n2. Write down your worries and then write realistic solutions or coping strategies for each one.\n3. Set boundaries with work by designating specific times for checking emails and taking regular breaks.\n4. Use the 'worry time' technique: schedule 15 minutes daily to worry, then redirect anxious thoughts outside this time."
-        },
-        {
-            "input": "Emotion: anxiety, User text: I keep having anxious thoughts that won't go away.",
-            "output": "Here are 4 ways to manage persistent anxious thoughts:\n1. Practice thought challenging by asking: 'Is this thought realistic? What evidence supports or contradicts it?'\n2. Use the 'STOP' technique: Stop, Take a breath, Observe your thoughts, Proceed with intention.\n3. Engage in physical exercise for 20-30 minutes to release tension and produce mood-boosting endorphins.\n4. Try the 'leaves on a stream' visualization: imagine your anxious thoughts as leaves floating down a stream, acknowledging them without getting caught up."
-        },
-        {
-            "input": "Emotion: anxiety, User text: I feel anxious in social situations and avoid them.",
-            "output": "Here are 4 strategies to manage social anxiety:\n1. Start with small social interactions like greeting a cashier or making brief eye contact to build confidence gradually.\n2. Practice positive self-talk by replacing 'What if I embarrass myself?' with 'Most people are focused on themselves, not judging me.'\n3. Use grounding techniques before social events: feel your feet on the ground, notice your surroundings, take slow breaths.\n4. Prepare conversation topics in advance and remember that others appreciate genuine interest in them."
-        }
+    # Add more variations and combinations
+    for conv in conversations:
+        training_conversations.append(conv)
+    
+    # Create additional variations by emotion intensity
+    intensity_variations = [
+        "[SEVERE_ANXIETY] I'm having panic attacks multiple times daily -> Here are 4 crisis-level strategies for severe anxiety: 1. Practice grounding techniques immediately during panic: hold ice cubes, name objects in the room, focus on your feet touching the ground. 2. Use the AWARE technique: Accept the feeling, Watch it without judgment, Act normal, Repeat the process, Expect the best outcome. 3. Consider professional help immediately - severe anxiety often requires therapeutic intervention and possibly medication evaluation. 4. Create a safety plan: identify triggers, early warning signs, coping strategies, and support people to contact during crises.",
+        
+        "[SEVERE_DEPRESSION] I can barely get out of bed and feel hopeless -> Here are 4 approaches for severe depression requiring immediate attention: 1. Focus on basic survival tasks: hydration, minimal nutrition, basic hygiene - these aren't luxuries but necessities for brain function. 2. Reach out to crisis support: national suicide prevention lifeline (988), crisis text line (text HOME to 741741), or emergency services if you're in immediate danger. 3. Contact a mental health professional immediately - severe depression often requires professional treatment and shouldn't be managed alone. 4. Create a minimal daily structure: one tiny goal like drinking water or stepping outside, building slowly as your capacity returns.",
+        
+        "[CHRONIC_STRESS] My stress has been ongoing for months -> Here are 4 long-term strategies for chronic stress management: 1. Assess what's within your control versus what isn't, and focus your energy on actionable changes while practicing acceptance for unchangeable circumstances. 2. Build stress resilience through regular practices: consistent sleep schedule, regular exercise, mindfulness meditation, and social support. 3. Consider whether major life changes are needed: job change, relationship adjustments, or lifestyle modifications to reduce chronic stressors. 4. Seek professional support for chronic stress, as it can lead to serious health consequences and often requires comprehensive intervention strategies.",
     ]
     
-    # Anger responses
-    anger_responses = [
-        {
-            "input": "Emotion: anger, User text: I'm really angry about what happened at work today.",
-            "output": "Here are 4 healthy ways to process and manage anger:\n1. Take a 10-minute cooling-off period before responding to avoid saying something you'll regret later.\n2. Practice intense physical exercise like running or boxing to release pent-up energy and reduce stress hormones.\n3. Write about your anger in a journal to process emotions and gain clarity on the situation.\n4. Use 'I' statements when discussing the issue: 'I felt frustrated when...' rather than 'You always...' to communicate effectively."
-        },
-        {
-            "input": "Emotion: anger, User text: I get angry quickly and say things I don't mean.",
-            "output": "Here are 4 techniques to manage quick anger and improve emotional regulation:\n1. Practice the 'pause rule': count to 10 before responding to give your prefrontal cortex time to engage.\n2. Identify your anger triggers and early warning signs like tension or racing heart to intervene sooner.\n3. Use progressive muscle relaxation daily to lower baseline tension and make you less reactive.\n4. Practice apologizing when you've said something in anger, and work on repairing relationships damaged by quick reactions."
-        },
-        {
-            "input": "Emotion: anger, User text: I'm furious about being treated unfairly.",
-            "output": "Here are 4 constructive ways to handle anger about unfair treatment:\n1. Validate your feelings first - anger about injustice is natural and can motivate positive change.\n2. Focus on what you can control: your response, actions, and who you share your energy with.\n3. Channel anger into assertive communication: clearly state your needs and boundaries without attacking others.\n4. Consider whether this situation requires action (like reporting unfair treatment) or acceptance and moving forward."
-        }
-    ]
+    training_conversations.extend(intensity_variations)
     
-    # Stress responses
-    stress_responses = [
-        {
-            "input": "Emotion: stress, User text: I'm feeling overwhelmed with all my responsibilities.",
-            "output": "Here are 4 strategies to manage overwhelming stress:\n1. Practice the 'brain dump' technique: write down everything on your mind, then prioritize tasks by urgency and importance.\n2. Break large tasks into smaller, manageable steps to avoid feeling overwhelmed by the big picture.\n3. Use the Pomodoro Technique: work for 25 minutes, then take a 5-minute break to maintain focus and prevent burnout.\n4. Practice saying 'no' to non-essential commitments to protect your time and energy for what matters most."
-        },
-        {
-            "input": "Emotion: stress, User text: Work stress is affecting my sleep and appetite.",
-            "output": "Here are 4 ways to address stress that's affecting your physical health:\n1. Create a wind-down routine 1 hour before bed: dim lights, avoid screens, try gentle stretching or reading.\n2. Practice mindful eating by paying attention to hunger cues and eating nutritious foods that support stress recovery.\n3. Set clear boundaries between work and personal time by turning off work notifications after hours.\n4. Consider stress-reduction techniques like yoga, meditation, or deep breathing exercises for 10-15 minutes daily."
-        }
-    ]
-    
-    # Joy responses (to maintain positive emotions)
-    joy_responses = [
-        {
-            "input": "Emotion: joy, User text: I'm feeling really happy about my recent success.",
-            "output": "Here are 4 ways to maintain and enhance your positive emotions:\n1. Practice gratitude by writing down what contributed to your success and who supported you along the way.\n2. Share your joy with others - positive emotions are contagious and strengthen relationships.\n3. Use this positive energy to set new goals or help others who might be struggling.\n4. Take time to fully savor this moment through mindful awareness of how happiness feels in your body and mind."
-        },
-        {
-            "input": "Emotion: joy, User text: I'm in a great mood and want to keep it going.",
-            "output": "Here are 4 strategies to sustain positive emotions and mental wellbeing:\n1. Engage in activities that bring you flow - hobbies or tasks where you lose track of time.\n2. Practice acts of kindness, as helping others creates a positive feedback loop that enhances your own mood.\n3. Spend time in nature, which research shows can maintain and boost positive emotions.\n4. Connect with loved ones and create positive memories together through shared experiences."
-        }
-    ]
-    
-    # Loneliness responses
-    loneliness_responses = [
-        {
-            "input": "Emotion: loneliness, User text: I feel isolated and disconnected from others.",
-            "output": "Here are 4 ways to address feelings of loneliness and build connection:\n1. Start small with brief social interactions like chatting with neighbors or joining online communities with shared interests.\n2. Practice self-compassion - treat yourself with the same kindness you'd show a good friend.\n3. Volunteer for causes you care about, which provides purpose and natural opportunities to meet like-minded people.\n4. Consider adopting a pet if possible, as animal companionship can reduce feelings of isolation and provide emotional support."
-        },
-        {
-            "input": "Emotion: loneliness, User text: I miss having close friends and feel alone.",
-            "output": "Here are 4 steps to rebuild social connections when feeling lonely:\n1. Reach out to one old friend or acquaintance with a simple message asking how they're doing.\n2. Join activities or classes that interest you, as shared activities create natural bonding opportunities.\n3. Practice being vulnerable in small ways - sharing authentic thoughts and feelings helps deepen relationships.\n4. Be patient with yourself - building meaningful friendships takes time, and quality matters more than quantity."
-        }
-    ]
-    
-    # Combine all responses
-    all_responses = (sad_responses + anxiety_responses + anger_responses + 
-                    stress_responses + joy_responses + loneliness_responses)
-    
-    # Create training format
-    for item in all_responses:
-        training_data.append(f"Input: {item['input']}\nOutput: {item['output']}")
-    
-    return training_data
+    return training_conversations
 
-def initialize_model():
-    """Initialize the model and tokenizer"""
-    model_name = "microsoft/DialoGPT-small"  # Lightweight model for local use
+class MentalHealthLLM:
+    """Fine-tuned LLM for mental health support"""
     
-    print("Loading tokenizer and model...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    
-    # Add padding token
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    model.to(device)
-    return model, tokenizer
-
-def train_model():
-    """Train the mental health support model"""
-    print("Creating training data...")
-    training_data = create_training_data()
-    
-    print("Initializing model...")
-    model, tokenizer = initialize_model()
-    
-    print("Preparing dataset...")
-    dataset = MentalHealthDataset(training_data, tokenizer)
-    
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir='./mental_health_model',
-        num_train_epochs=3,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        warmup_steps=100,
-        weight_decay=0.01,
-        logging_dir='./logs',
-        logging_steps=10,
-        save_strategy="no",  # Don't save intermediate checkpoints
-        evaluation_strategy="no",  # No evaluation during training
-        load_best_model_at_end=False,
-    )
-    
-    print("Starting training...")
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset,
-        tokenizer=tokenizer,
-    )
-    
-    trainer.train()
-    
-    print("Training completed!")
-    return model, tokenizer
-
-def generate_response(model, tokenizer, emotion, user_text):
-    """Generate mental health advice based on emotion and user text"""
-    
-    # Create input prompt
-    input_text = f"Input: Emotion: {emotion.lower()}, User text: {user_text}\nOutput:"
-    
-    # Tokenize input
-    inputs = tokenizer.encode(input_text, return_tensors='pt').to(device)
-    
-    # Generate response
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs,
-            max_length=inputs.shape[1] + 200,  # Generate additional tokens
-            num_return_sequences=1,
-            temperature=0.7,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
-            no_repeat_ngram_size=2,
-            early_stopping=True
+    def __init__(self, model_name='gpt2'):
+        self.model_name = model_name
+        self.tokenizer = None
+        self.model = None
+        self.device = device
+        
+    def initialize_model(self):
+        """Initialize tokenizer and model"""
+        print("Initializing GPT-2 model for mental health support...")
+        
+        # Load tokenizer
+        self.tokenizer = GPT2Tokenizer.from_pretrained(self.model_name)
+        
+        # Add special tokens
+        special_tokens = ['<|startoftext|>', '<|endoftext|>', '<|pad|>']
+        self.tokenizer.add_special_tokens({
+            'pad_token': '<|pad|>',
+            'bos_token': '<|startoftext|>',
+            'eos_token': '<|endoftext|>'
+        })
+        
+        # Load model
+        self.model = GPT2LMHeadModel.from_pretrained(self.model_name)
+        self.model.resize_token_embeddings(len(self.tokenizer))
+        self.model.to(self.device)
+        
+        print("Model initialized successfully!")
+        
+    def prepare_training_data(self):
+        """Prepare and format training data"""
+        print("Preparing training data...")
+        
+        conversations = create_comprehensive_training_data()
+        
+        # Format conversations for training
+        formatted_data = []
+        for conv in conversations:
+            # Add special tokens
+            formatted_conv = f"<|startoftext|>{conv}<|endoftext|>"
+            formatted_data.append(formatted_conv)
+        
+        print(f"Prepared {len(formatted_data)} training examples")
+        return formatted_data
+        
+    def train_model(self, epochs=3, batch_size=2):
+        """Train the model on mental health data"""
+        print("Starting model training...")
+        
+        # Prepare data
+        training_data = self.prepare_training_data()
+        
+        # Create dataset
+        dataset = MentalHealthDataset(training_data, self.tokenizer)
+        
+        # Training arguments
+        training_args = TrainingArguments(
+            output_dir='./mental_health_gpt2',
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            per_device_eval_batch_size=batch_size,
+            warmup_steps=100,
+            weight_decay=0.01,
+            logging_dir='./logs',
+            logging_steps=10,
+            save_strategy="epoch",
+            evaluation_strategy="no",
+            learning_rate=5e-5,
+            fp16=False,  # Disable for compatibility
         )
-    
-    # Decode response
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Extract only the generated part
-    response = response[len(input_text):].strip()
-    
-    return response
-
-def create_fallback_responses():
-    """Create fallback responses for better accuracy"""
-    return {
-        'sad': [
-            "Here are 4 ways to improve your mental health when feeling sad:",
-            "1. Practice deep breathing exercises for 5-10 minutes to calm your nervous system.",
-            "2. Take a 15-20 minute walk outside to boost serotonin levels naturally.",
-            "3. Write down three things you're grateful for to shift focus to positive thoughts.",
-            "4. Reach out to a trusted friend or family member for emotional support."
-        ],
-        'anxiety': [
-            "Here are 4 techniques to manage anxiety and reduce worry:",
-            "1. Practice the 4-7-8 breathing technique to activate your parasympathetic nervous system.",
-            "2. Write down your worries and realistic solutions for each one.",
-            "3. Set boundaries with stressful situations and take regular breaks.",
-            "4. Use the 'worry time' technique: schedule 15 minutes daily for concerns."
-        ],
-        'anger': [
-            "Here are 4 healthy ways to process and manage anger:",
-            "1. Take a 10-minute cooling-off period before responding to avoid regret.",
-            "2. Practice intense physical exercise to release pent-up energy.",
-            "3. Write about your anger in a journal to process emotions and gain clarity.",
-            "4. Use 'I' statements when discussing issues to communicate effectively."
-        ],
-        'stress': [
-            "Here are 4 strategies to manage overwhelming stress:",
-            "1. Practice the 'brain dump' technique: write everything down, then prioritize.",
-            "2. Break large tasks into smaller, manageable steps.",
-            "3. Use the Pomodoro Technique: 25 minutes work, 5 minutes break.",
-            "4. Practice saying 'no' to non-essential commitments."
-        ],
-        'loneliness': [
-            "Here are 4 ways to address feelings of loneliness:",
-            "1. Start with brief social interactions like chatting with neighbors.",
-            "2. Practice self-compassion and treat yourself with kindness.",
-            "3. Volunteer for causes you care about to meet like-minded people.",
-            "4. Consider adopting a pet for companionship and emotional support."
-        ],
-        'joy': [
-            "Here are 4 ways to maintain and enhance positive emotions:",
-            "1. Practice gratitude by acknowledging what contributed to your success.",
-            "2. Share your joy with others - positive emotions are contagious.",
-            "3. Use this positive energy to set new goals or help others.",
-            "4. Take time to fully savor this moment through mindful awareness."
-        ]
-    }
-
-def get_mental_health_advice(emotion, user_text, model=None, tokenizer=None):
-    """Main function to get mental health advice"""
-    
-    # Normalize emotion
-    emotion = emotion.lower().strip()
-    
-    # Map similar emotions
-    emotion_mapping = {
-        'happy': 'joy',
-        'excited': 'joy',
-        'cheerful': 'joy',
-        'worried': 'anxiety',
-        'nervous': 'anxiety',
-        'anxious': 'anxiety',
-        'mad': 'anger',
-        'frustrated': 'anger',
-        'furious': 'anger',
-        'overwhelmed': 'stress',
-        'pressured': 'stress',
-        'tired': 'stress',
-        'alone': 'loneliness',
-        'isolated': 'loneliness',
-        'depressed': 'sad',
-        'down': 'sad',
-        'blue': 'sad'
-    }
-    
-    emotion = emotion_mapping.get(emotion, emotion)
-    
-    # Try to generate with trained model first
-    if model and tokenizer:
+        
+        # Data collator
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=self.tokenizer,
+            mlm=False,
+        )
+        
+        # Initialize trainer
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=dataset,
+            data_collator=data_collator,
+            tokenizer=self.tokenizer,
+        )
+        
+        # Train
+        trainer.train()
+        
+        print("Training completed!")
+        
+    def generate_response(self, emotion, user_text, max_length=300):
+        """Generate mental health advice using the trained model"""
+        
+        # Format input
+        input_text = f"<|startoftext|>[{emotion.upper()}] {user_text} ->"
+        
+        # Tokenize
+        inputs = self.tokenizer.encode(input_text, return_tensors='pt').to(self.device)
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_length=inputs.shape[1] + max_length,
+                num_return_sequences=1,
+                temperature=0.7,
+                do_sample=True,
+                top_p=0.9,
+                top_k=50,
+                pad_token_id=self.tokenizer.eos_token_id,
+                no_repeat_ngram_size=2,
+                early_stopping=True
+            )
+        
+        # Decode
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract generated part
+        response = response[len(input_text):].strip()
+        
+        # Clean up response
+        if '<|endoftext|>' in response:
+            response = response.split('<|endoftext|>')[0].strip()
+            
+        return response
+        
+    def predict(self, emotion, user_text):
+        """Main prediction function"""
         try:
-            response = generate_response(model, tokenizer, emotion, user_text)
-            if response and len(response) > 50:  # Check if response is substantial
-                return response
+            response = self.generate_response(emotion, user_text)
+            
+            # Ensure response has 4-5 points
+            if not re.search(r'\d+\.', response):
+                # If no numbered points, add fallback
+                response = self.add_structure_to_response(response, emotion)
+                
+            return response
+            
         except Exception as e:
-            print(f"Model generation failed: {e}")
+            print(f"Generation error: {e}")
+            return self.get_fallback_response(emotion, user_text)
     
-    # Fallback to pre-defined responses
-    fallback_responses = create_fallback_responses()
+    def add_structure_to_response(self, response, emotion):
+        """Add structure if model doesn't generate numbered points"""
+        structured_response = f"Here are 4 ways to improve your mental health with {emotion}:\n"
+        
+        # Split response into sentences and create points
+        sentences = response.split('. ')
+        points = []
+        
+        for i, sentence in enumerate(sentences[:4]):
+            if sentence.strip():
+                points.append(f"{i+1}. {sentence.strip()}.")
+        
+        # Ensure we have 4 points
+        while len(points) < 4:
+            points.append(f"{len(points)+1}. Practice mindfulness and self-compassion to support your emotional wellbeing.")
+        
+        return structured_response + '\n'.join(points)
     
-    if emotion in fallback_responses:
-        return '\n'.join(fallback_responses[emotion])
-    else:
-        # Default response for unknown emotions
-        return "Here are 4 general strategies to improve your mental health:\n1. Practice deep breathing exercises for 5-10 minutes daily.\n2. Engage in regular physical activity to boost mood naturally.\n3. Maintain a consistent sleep schedule of 7-9 hours per night.\n4. Connect with supportive friends, family, or a mental health professional."
+    def get_fallback_response(self, emotion, user_text):
+        """Fallback response if generation fails"""
+        return f"Here are 4 evidence-based strategies for {emotion}:\n1. Practice deep breathing exercises to regulate your nervous system.\n2. Engage in physical activity to release mood-boosting endorphins.\n3. Connect with supportive people in your life for emotional support.\n4. Consider professional help if these feelings persist or worsen."
+
+# Initialize and train the model
+def setup_mental_health_llm():
+    """Setup and train the mental health LLM"""
+    
+    # Initialize model
+    llm = MentalHealthLLM()
+    llm.initialize_model()
+    
+    # Train model
+    print("Training the model... This may take a few minutes.")
+    llm.train_model(epochs=2, batch_size=1)  # Reduced for local execution
+    
+    return llm
+
+def test_model(llm):
+    """Test the trained model"""
+    print("\n" + "="*60)
+    print("TESTING MENTAL HEALTH LLM")
+    print("="*60)
+    
+    test_cases = [
+        ("sad", "I feel empty and nothing interests me anymore"),
+        ("anxiety", "I'm constantly worried about everything going wrong"),
+        ("anger", "I'm furious about being treated unfairly"),
+        ("stress", "I'm overwhelmed with work and can't sleep"),
+        ("loneliness", "I feel disconnected from everyone around me"),
+    ]
+    
+    for emotion, user_text in test_cases:
+        print(f"\n🎯 INPUT:")
+        print(f"   Emotion: {emotion}")
+        print(f"   User Text: {user_text}")
+        print(f"\n🤖 LLM RESPONSE:")
+        print("-" * 50)
+        
+        response = llm.predict(emotion, user_text)
+        print(response)
+        
+        print("\n" + "="*60)
 
 # Main execution
-if __name__ == "__main__":
-    print("=" * 50)
-    print("MENTAL HEALTH SUPPORT LLM")
-    print("=" * 50)
+print("🧠 MENTAL HEALTH LLM SYSTEM")
+print("="*60)
+print("This system uses a fine-tuned GPT-2 model to generate")
+print("personalized mental health advice based on emotions.")
+print("="*60)
+
+# Setup model
+mental_health_llm = setup_mental_health_llm()
+
+# Test the model
+test_model(mental_health_llm)
+
+# Interactive function
+def chat_with_llm():
+    """Interactive chat with the LLM"""
+    print("\n" + "="*60)
+    print("🤖 CHAT WITH MENTAL HEALTH LLM")
+    print("="*60)
+    print("Enter your emotion and describe how you're feeling.")
+    print("Type 'quit' to exit.")
     
-    # Option to train or use pre-built responses
-    train_choice = input("Do you want to train a custom model? (y/n): ").lower()
-    
-    if train_choice == 'y':
-        print("Training custom model...")
-        model, tokenizer = train_model()
-        print("Model training completed!")
-    else:
-        print("Using pre-built response system...")
-        model, tokenizer = None, None
-    
-    print("\n" + "=" * 50)
-    print("MENTAL HEALTH ADVISOR READY")
-    print("=" * 50)
-    
-    # Interactive loop
     while True:
-        print("\nEnter your emotion and describe how you're feeling:")
-        print("(Type 'quit' to exit)")
-        
-        emotion = input("\nEmotion (e.g., sad, anxious, angry, stressed, lonely, joy): ").strip()
-        
+        emotion = input("\n🎯 Emotion: ").strip()
         if emotion.lower() == 'quit':
-            print("Take care of yourself! Remember, seeking help is a sign of strength.")
+            print("💙 Take care of yourself!")
             break
+            
+        user_text = input("📝 How are you feeling: ").strip()
         
-        user_text = input("Describe how you're feeling: ").strip()
-        
-        if not emotion or not user_text:
-            print("Please provide both emotion and description.")
-            continue
-        
-        print("\n" + "-" * 50)
-        print("MENTAL HEALTH ADVICE:")
-        print("-" * 50)
-        
-        advice = get_mental_health_advice(emotion, user_text, model, tokenizer)
-        print(advice)
-        
-        print("\n" + "-" * 50)
-        print("Remember: This is general guidance. For persistent concerns, please consult a mental health professional.")
-        print("-" * 50)
+        if emotion and user_text:
+            print(f"\n🤖 LLM RESPONSE:")
+            print("-" * 50)
+            response = mental_health_llm.predict(emotion, user_text)
+            print(response)
+            print("-" * 50)
+        else:
+            print("❌ Please provide both emotion and description.")
 
-# Example usage function
-def example_usage():
-    """Show examples of how to use the system"""
-    print("\n" + "=" * 50)
-    print("EXAMPLE USAGE")
-    print("=" * 50)
-    
-    examples = [
-        ("sad", "I've been feeling down lately and nothing seems to interest me anymore."),
-        ("anxiety", "I'm worried about my job interview tomorrow and can't stop thinking about it."),
-        ("anger", "I'm furious with my coworker for taking credit for my work."),
-        ("stress", "I have too many deadlines and feel completely overwhelmed."),
-        ("loneliness", "I moved to a new city and don't know anyone here."),
-        ("joy", "I just got promoted and want to maintain this positive feeling!")
-    ]
-    
-    for emotion, user_text in examples:
-        print(f"\nEmotion: {emotion}")
-        print(f"User text: {user_text}")
-        print("Response:")
-        advice = get_mental_health_advice(emotion, user_text)
-        print(advice)
-        print("-" * 30)
-
-# Uncomment the line below to see examples
-# example_usage()
+print("\n✅ Model ready! Use chat_with_llm() to interact with the trained model.")
