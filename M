@@ -1,0 +1,9 @@
+from transformers import pipeline
+
+# Load the model
+chatbot = pipeline("text-generation", model="TheCarBun/GPT-2-fine-tuned-mental-health")
+
+# Test the chatbot
+user_input = "I feel so alone."
+response = chatbot(f"User: {user_input} AI:", max_length=50)
+print(response[0]['generated_text'])
