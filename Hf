@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-token = "hf_your_actual_token_here"
+token = "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"
 
 tokenizer = AutoTokenizer.from_pretrained("TheCarBun/GPT-2-fine-tuned-mental-health", use_auth_token=token)
 model = AutoModelForCausalLM.from_pretrained("TheCarBun/GPT-2-fine-tuned-mental-health", use_auth_token=token)
