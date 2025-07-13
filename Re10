@@ -1,0 +1,38 @@
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import torch
+
+# Load fine-tuned model and tokenizer
+model_dir = "gpt2_mental_health"  # path where your model is saved
+tokenizer = GPT2Tokenizer.from_pretrained(model_dir)
+tokenizer.pad_token = tokenizer.eos_token
+model = GPT2LMHeadModel.from_pretrained(model_dir)
+model.eval()
+
+# ==== INPUT VARIABLES ====
+text = "I am feeling anxious about upcoming exams"
+label = "anxiety"  # example: sad, anger, stress, anxiety, etc.
+
+# ==== PROMPT AND GENERATION ====
+prompt = f"""[{label.upper()}] {text} ->
+Suggest 4 mental health strategies in a numbered list format to support the person feeling this way.
+1."""
+
+input_ids = tokenizer.encode(prompt, return_tensors="pt")
+
+output = model.generate(
+    input_ids=input_ids,
+    max_length=200,
+    temperature=0.7,
+    top_k=50,
+    top_p=0.95,
+    do_sample=True,
+    no_repeat_ngram_size=3,
+    pad_token_id=tokenizer.eos_token_id
+)
+
+# ==== OUTPUT PROCESSING ====
+decoded = tokenizer.decode(output[0], skip_special_tokens=True)
+advice = decoded.split("->", 1)[1].strip() if "->" in decoded else decoded.strip()
+
+print("\n🧠 GPT-2 Mental Health Support:\n")
+print(advice)
