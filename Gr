@@ -1,0 +1,138 @@
+# !pip install gradio transformers scikit-learn nltk
+
+import gradio as gr
+import pandas as pd
+import numpy as np
+import re
+import nltk
+import torch
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.sentiment import SentimentIntensityAnalyzer
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer, AutoModelForSeq2SeqLM
+
+# Download NLTK assets
+nltk.download("punkt")
+nltk.download("stopwords")
+nltk.download("vader_lexicon")
+
+# ========== STEP 1: Load your dataset (must have 'test_text' and 'emotion_label') ==========
+df = pd.read_csv("your_dataset.csv")  # Replace with your file name
+
+assert 'test_text' in df.columns and 'emotion_label' in df.columns, "Dataset must contain 'test_text' and 'emotion_label'"
+
+# ========== STEP 2: Preprocessing ==========
+
+def preprocess(text):
+    text = text.lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    text = re.sub(r"\W", " ", text)
+    text = re.sub(r"\d+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    tokens = word_tokenize(text)
+    return " ".join([w for w in tokens if w not in stopwords.words("english")])
+
+df["cleaned"] = df["test_text"].apply(preprocess)
+
+# TF-IDF + Sentiment
+tfidf = TfidfVectorizer(max_features=1000)
+X_tfidf = tfidf.fit_transform(df["cleaned"]).toarray()
+
+sia = SentimentIntensityAnalyzer()
+sentiment = np.array([[sia.polarity_scores(t)["compound"]] for t in df["test_text"]])
+X = np.hstack((X_tfidf, sentiment))
+y = df["emotion_label"]
+
+# ========== STEP 3: Train Classifier ==========
+clf = LogisticRegression(max_iter=1000, multi_class='multinomial')
+clf.fit(X, y)
+
+# Label mapping
+emotion_map = {0: "sad", 1: "joy", 2: "love", 3: "anger", 4: "fear", 5: "surprise"}
+
+# ========== STEP 4: Load GPT-2 and FLAN-T5 Models ==========
+class GPT2Helper:
+    def __init__(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model = GPT2LMHeadModel.from_pretrained("gpt2").to(self.device)
+
+    def generate(self, emotion, text):
+        prompt = f"[{emotion.upper()}] {text} ->"
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.model.generate(
+            inputs["input_ids"],
+            max_length=inputs["input_ids"].shape[1] + 100,
+            temperature=0.7,
+            top_p=0.9,
+            top_k=50,
+            do_sample=True,
+            pad_token_id=self.tokenizer.eos_token_id
+        )
+        decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return decoded.split("->")[1].strip() if "->" in decoded else decoded.strip()
+
+class FLANT5Helper:
+    def __init__(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
+        self.model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(self.device)
+
+    def generate(self, emotion):
+        prompt = f"A person is feeling {emotion}. Suggest 3-4 mental health strategies."
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=50,
+            temperature=0.7,
+            num_beams=3,
+            do_sample=True
+        )
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# Load both models once
+gpt2_model = GPT2Helper()
+flan_model = FLANT5Helper()
+
+# ========== STEP 5: Gradio Function ==========
+def mental_health_ai(user_input):
+    # Preprocess & vectorize
+    cleaned = preprocess(user_input)
+    vec = tfidf.transform([cleaned]).toarray()
+    sent = np.array([[sia.polarity_scores(user_input)["compound"]]])
+    X_input = np.hstack((vec, sent))
+
+    # Predict emotion
+    pred = clf.predict(X_input)[0]
+    emotion = emotion_map[pred]
+
+    # Generate LLM responses
+    gpt2_response = gpt2_model.generate(emotion, user_input)
+    flan_response = flan_model.generate(emotion)
+
+    return f"""
+### 🎯 Detected Emotion: `{emotion.upper()}`
+
+---
+
+#### 🤖 GPT-2 Mental Health Response:
+{gpt2_response}
+
+---
+
+#### ✨ FLAN-T5 Practical Advice:
+{flan_response}
+"""
+
+# ========== STEP 6: Launch Gradio Interface ==========
+gr.Interface(
+    fn=mental_health_ai,
+    inputs=gr.Textbox(label="💬 Enter how you're feeling"),
+    outputs=gr.Markdown(label="🧠 Mental Health AI Response"),
+    title="AI Mental Health Assistant (Notebook Only)",
+    description="Enter your text. The system predicts your emotion and gives advice using GPT-2 & FLAN-T5."
+).launch(inline=True)
