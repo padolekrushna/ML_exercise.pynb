@@ -1,138 +1,247 @@
-# !pip install gradio transformers scikit-learn nltk
-
-import gradio as gr
-import pandas as pd
+# ========================================
+# 🔁 STEP 1: Import Modules and Load Dataset
+# ========================================
 import numpy as np
+import pandas as pd
 import re
 import nltk
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pickle
 import torch
-from nltk.tokenize import word_tokenize
+import torch.nn as nn
 from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 from nltk.sentiment import SentimentIntensityAnalyzer
-from sklearn.linear_model import LogisticRegression
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer, AutoModelForSeq2SeqLM
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+from torch.utils.data import Dataset
+from transformers import (
+    GPT2LMHeadModel, GPT2Tokenizer, 
+    TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+    AutoTokenizer, AutoModelForSeq2SeqLM
+)
+import warnings
+warnings.filterwarnings('ignore')
 
-# Download NLTK assets
-nltk.download("punkt")
 nltk.download("stopwords")
+nltk.download("punkt")
 nltk.download("vader_lexicon")
 
-# ========== STEP 1: Load your dataset (must have 'test_text' and 'emotion_label') ==========
-df = pd.read_csv("your_dataset.csv")  # Replace with your file name
+# ========================================
+# 🔁 STEP 2: Load and Preprocess Emotion Dataset
+# ========================================
+Emotion_data = pd.read_csv("Emotions.csv")
+Emotion_data = Emotion_data.drop(["Unnamed: 0"], axis=1)
+E_data = pd.DataFrame()
+for i in range(6):
+    subset = Emotion_data[Emotion_data["label"] == i].sample(n=12000, random_state=42)
+    E_data = pd.concat([E_data, subset])
+Emotion_data = E_data.copy()
+Emotion_data.reset_index(drop=True, inplace=True)
 
-assert 'test_text' in df.columns and 'emotion_label' in df.columns, "Dataset must contain 'test_text' and 'emotion_label'"
-
-# ========== STEP 2: Preprocessing ==========
-
-def preprocess(text):
+def preprocess_text(text):
     text = text.lower()
     text = re.sub(r"http\S+|www\S+|https\S+", "", text)
     text = re.sub(r"\W", " ", text)
     text = re.sub(r"\d+", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     tokens = word_tokenize(text)
-    return " ".join([w for w in tokens if w not in stopwords.words("english")])
+    tokens = [word for word in tokens if word not in stopwords.words("english")]
+    return " ".join(tokens)
 
-df["cleaned"] = df["test_text"].apply(preprocess)
+Emotion_data["cleaned_text"] = Emotion_data["text"]
+Emotion_data = Emotion_data.drop(["text"], axis=1)
+Emotion_data.dropna(inplace=True)
+Emotion_data["word_count"] = Emotion_data["cleaned_text"].apply(lambda x: len(x.split()))
+Emotion_data["char_count"] = Emotion_data["cleaned_text"].apply(lambda x: len(x))
+Emotion_data.drop(["word_count", "char_count"], axis=1, inplace=True)
 
-# TF-IDF + Sentiment
-tfidf = TfidfVectorizer(max_features=1000)
-X_tfidf = tfidf.fit_transform(df["cleaned"]).toarray()
-
+# ========================================
+# 🔁 STEP 3: TF-IDF + Sentiment Features
+# ========================================
+tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1,2))
+X_tfidf = tfidf.fit_transform(Emotion_data["cleaned_text"])
 sia = SentimentIntensityAnalyzer()
-sentiment = np.array([[sia.polarity_scores(t)["compound"]] for t in df["test_text"]])
-X = np.hstack((X_tfidf, sentiment))
-y = df["emotion_label"]
+Emotion_data["sentiment"] = Emotion_data["cleaned_text"].apply(lambda x: sia.polarity_scores(x)["compound"])
+X = np.hstack((X_tfidf.toarray(), Emotion_data["sentiment"].values.reshape(-1, 1)))
+y = Emotion_data["label"]
 
-# ========== STEP 3: Train Classifier ==========
-clf = LogisticRegression(max_iter=1000, multi_class='multinomial')
-clf.fit(X, y)
+# ========================================
+# 🔁 STEP 4: Train/Test Split + Logistic Regression Model
+# ========================================
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+log_reg = LogisticRegression(max_iter=1000, multi_class='multinomial', solver='lbfgs')
+log_reg.fit(X_train, y_train)
+with open('logistic_regression_model.pkl', 'wb') as f:
+    pickle.dump(log_reg, f)
+with open('tfidf_vectorizer.pkl', 'wb') as f:
+    pickle.dump(tfidf, f)
 
-# Label mapping
-emotion_map = {0: "sad", 1: "joy", 2: "love", 3: "anger", 4: "fear", 5: "surprise"}
+# ========================================
+# 🔁 STEP 5: Define GPT-2 Fine-Tuned Model Class
+# ========================================
+class MentalHealthDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_length=512):
+        self.texts = texts
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
-# ========== STEP 4: Load GPT-2 and FLAN-T5 Models ==========
-class GPT2Helper:
-    def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = GPT2LMHeadModel.from_pretrained("gpt2").to(self.device)
+    def __len__(self):
+        return len(self.texts)
 
-    def generate(self, emotion, text):
-        prompt = f"[{emotion.upper()}] {text} ->"
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        outputs = self.model.generate(
-            inputs["input_ids"],
-            max_length=inputs["input_ids"].shape[1] + 100,
-            temperature=0.7,
-            top_p=0.9,
-            top_k=50,
-            do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            padding='max_length',
+            max_length=self.max_length,
+            return_tensors='pt'
         )
-        decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return decoded.split("->")[1].strip() if "->" in decoded else decoded.strip()
+        return {
+            'input_ids': encoding['input_ids'].flatten(),
+            'attention_mask': encoding['attention_mask'].flatten(),
+            'labels': encoding['input_ids'].flatten()
+        }
 
-class FLANT5Helper:
-    def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
-        self.model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(self.device)
+def create_comprehensive_training_data():
+    # Your full pre-written training data logic (unchanged)
+    return [  # dummy placeholder: replace with your long conversation list
+        "[SAD] I feel empty and hopeless -> 1. Start small. 2. Talk to someone. 3. Rest. 4. Reflect."
+    ]
 
-    def generate(self, emotion):
-        prompt = f"A person is feeling {emotion}. Suggest 3-4 mental health strategies."
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        outputs = self.model.generate(
-            **inputs,
-            max_new_tokens=50,
-            temperature=0.7,
-            num_beams=3,
-            do_sample=True
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+class MentalHealthLLM:
+    def __init__(self, model_name='gpt2'):
+        self.model_name = model_name
+        self.tokenizer = None
+        self.model = None
+        self.device = device
+
+    def initialize_model(self):
+        self.tokenizer = GPT2Tokenizer.from_pretrained(self.model_name)
+        self.tokenizer.add_special_tokens({
+            'pad_token': '<|pad|>',
+            'bos_token': '<|startoftext|>',
+            'eos_token': '<|endoftext|>'
+        })
+        self.model = GPT2LMHeadModel.from_pretrained(self.model_name)
+        self.model.resize_token_embeddings(len(self.tokenizer))
+        self.model.to(self.device)
+
+    def prepare_training_data(self):
+        conversations = create_comprehensive_training_data()
+        return [f"<|startoftext|>{conv}<|endoftext|>" for conv in conversations]
+
+    def train_model(self, epochs=2, batch_size=1):
+        training_data = self.prepare_training_data()
+        dataset = MentalHealthDataset(training_data, self.tokenizer)
+        training_args = TrainingArguments(
+            output_dir='./mental_health_gpt2',
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            logging_dir='./logs',
+            save_strategy="epoch"
         )
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=dataset,
+            data_collator=data_collator,
+            tokenizer=self.tokenizer
+        )
+        trainer.train()
 
-# Load both models once
-gpt2_model = GPT2Helper()
-flan_model = FLANT5Helper()
+    def generate_response(self, emotion, user_text, max_length=300):
+        input_text = f"<|startoftext|>[{emotion.upper()}] {user_text} ->"
+        inputs = self.tokenizer.encode(input_text, return_tensors='pt').to(self.device)
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_length=inputs.shape[1] + max_length,
+                temperature=0.7,
+                do_sample=True,
+                top_p=0.9,
+                top_k=50,
+                pad_token_id=self.tokenizer.eos_token_id,
+                no_repeat_ngram_size=2,
+                early_stopping=True
+            )
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return response[len(input_text):].strip().split("<|endoftext|>")[0].strip()
 
-# ========== STEP 5: Gradio Function ==========
-def mental_health_ai(user_input):
-    # Preprocess & vectorize
-    cleaned = preprocess(user_input)
-    vec = tfidf.transform([cleaned]).toarray()
-    sent = np.array([[sia.polarity_scores(user_input)["compound"]]])
-    X_input = np.hstack((vec, sent))
+    def predict(self, emotion, user_text):
+        try:
+            return self.generate_response(emotion, user_text)
+        except:
+            return "Fallback response."
 
-    # Predict emotion
-    pred = clf.predict(X_input)[0]
-    emotion = emotion_map[pred]
+# ========================================
+# 🔁 STEP 6: Define FLAN-T5 Lightweight LLM
+# ========================================
+class LightMentalHealthLLM:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = "google/flan-t5-small"
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(self.device)
 
-    # Generate LLM responses
-    gpt2_response = gpt2_model.generate(emotion, user_input)
-    flan_response = flan_model.generate(emotion)
+    def get_advice(self, emotion, user_text):
+        prompt = f"The user said: A person is feeling {emotion}. Suggest 3 to 4 helpful mental health strategies."
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=64).to(self.device)
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=50,
+                temperature=0.7,
+                do_sample=True,
+                num_beams=3
+            )
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-    return f"""
-### 🎯 Detected Emotion: `{emotion.upper()}`
+# ========================================
+# ✅ FINAL STEP: RUNNING THE COMPLETE FLOW
+# ========================================
+print("\n🧠 AI Mental Health Assistant")
+test_text = input("📝 How are you feeling today? ")
 
----
+# Emotion Detection
+with open("logistic_regression_model.pkl", "rb") as f:
+    model = pickle.load(f)
+with open("tfidf_vectorizer.pkl", "rb") as f:
+    tfidf_vectorizer = pickle.load(f)
 
-#### 🤖 GPT-2 Mental Health Response:
-{gpt2_response}
+X_input = tfidf_vectorizer.transform([test_text]).toarray()
+sentiment = np.array([[sia.polarity_scores(test_text)["compound"]]])
+X_combined = np.hstack((X_input, sentiment))
+pred_label = model.predict(X_combined)[0]
+emotion_labels = {0: "sad", 1: "joy", 2: "love", 3: "anger", 4: "fear", 5: "surprise"}
+emotion_label = emotion_labels[pred_label]
 
----
+print(f"\n🎯 Detected Emotion: {emotion_label.upper()}")
 
-#### ✨ FLAN-T5 Practical Advice:
-{flan_response}
-"""
+# GPT-2 Fine-Tune and Predict
+mental_health_llm = MentalHealthLLM()
+mental_health_llm.initialize_model()
+mental_health_llm.train_model()  # Fine-tune
+gpt2_response = mental_health_llm.predict(emotion_label, test_text)
 
-# ========== STEP 6: Launch Gradio Interface ==========
-gr.Interface(
-    fn=mental_health_ai,
-    inputs=gr.Textbox(label="💬 Enter how you're feeling"),
-    outputs=gr.Markdown(label="🧠 Mental Health AI Response"),
-    title="AI Mental Health Assistant (Notebook Only)",
-    description="Enter your text. The system predicts your emotion and gives advice using GPT-2 & FLAN-T5."
-).launch(inline=True)
+# FLAN-T5 Response
+light_llm = LightMentalHealthLLM()
+flan_response = light_llm.get_advice(emotion_label, test_text)
+
+# Unified Output
+print("\n🤖 GPT-2 Advice (Fine-Tuned):")
+print("-" * 60)
+print(gpt2_response)
+
+print("\n💡 FLAN-T5 Suggestion:")
+print("-" * 60)
+print(flan_response)
+
+print("\n✅ End of Session")
